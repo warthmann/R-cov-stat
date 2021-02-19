@@ -1,12 +1,12 @@
 #bin/bash
 
-#mkdir -p output/100kb
-#mkdir -p output/500kb
-#mkdir -p output/10kb
+mkdir -p output/100kb
+mkdir -p output/500kb
+mkdir -p output/10kb
 
-#bedtools makewindows -g Banana_chromosome_file.tab -w 10000 > output/window_file_10kb
-#bedtools makewindows -g Banana_chromosome_file.tab -w 100000 > output/window_file_100kb
-#bedtools makewindows -g Banana_chromosome_file.tab -w 500000 > output/window_file_500kb
+bedtools makewindows -g Banana_chromosome_file.tab -w 10000 > output/window_file_10kb
+bedtools makewindows -g Banana_chromosome_file.tab -w 100000 > output/window_file_100kb
+bedtools makewindows -g Banana_chromosome_file.tab -w 500000 > output/window_file_500kb
 
 cat list_of_banana_samplenames | \
 parallel -j 1 \
