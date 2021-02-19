@@ -1,0 +1,201 @@
+---
+output:
+  bookdown::gitbook: default
+  bookdown::pdf_book: default
+---
+
+# Coverage Statistic
+
+Testig statistical significant differences in read coverage in sliding windows along the genome. First the chromosomes are segmented into "windows", then the average genome coverage in those windows is established, and then statistically compared between the different classes of samples.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## making the windows
+
+It works on Bam files. You need to first (manually) make a “chromosome_file”, which you then use to make “window files” and then use the window files for the coverage analysis. The chromosome file is simply tab delimited chromosome identifier and length of chromosome. like so (this is for Sorghum):
+
+```
+Chr01   80884392
+Chr02   77742459
+Chr03   74386277
+Chr04   68658214
+Chr05   71854669
+Chr06   61277060
+Chr07   65505356
+Chr08   62686529
+Chr09   59416394
+Chr10   61233695
+```
+
+Then make the window files (for 10kB, 100kB, 500kB) like so:
+
+```
+bedtools makewindows -g Sorghum_chromosome_file -w 10000 > Sorghum_window_file_10kb
+bedtools makewindows -g Sorghum_chromosome_file -w 100000 > Sorghum_window_file_100kb
+bedtools makewindows -g Sorghum_chromosome_file -w 500000 > Sorghum_window_file_500kb
+```
+
+## Coverage in windows
+for each sample listed in the file data/list_of_samplenames
+
+```{r include=F}
+#file data/list_of_samplenames:
+#con-2_S1
+#con-3_S2
+#con-4_S3
+#D1-1_S4
+#D1-2_S5
+#D1-4_S6
+#D2-1_S7
+#D2-3_S8
+#D2-4_S9
+#D3-1_S10
+#D3-3_S11
+#D3-4_S12
+#D4-1_S13
+#D4-3_S14
+#D4-4_S15
+#D5-1_S16
+#D5-3_S17
+#D5-4_S18
+#D6-2_S19
+#D6-3_S20
+#D6-4_S21
+#R1_S22
+#R2_S23
+#R3_S24
+#R4_S25
+```
+
+determine coverage like so:
+
+```
+#bin/bash
+cat list_of_samplenames | \
+parallel -j 1 \
+bedtools coverage -a Sorghum_window_file_100kb \
+-b ~/Analysis/datasets/IAEA_sorghum_WGS_run_1/ngm_bam/{}_Sbicolor_313_v3.0.fa.bam \
+\> 100kb/coverage_100kb_{}.out
+
+cat list_of_samplenames | \
+parallel -j 1 \
+bedtools coverage -a Sorghum_window_file_500kb \
+-b ~/Analysis/datasets/IAEA_sorghum_WGS_run_1/ngm_bam/{}_Sbicolor_313_v3.0.fa.bam \
+\> 500kb/coverage_500kb_{}.out
+
+cat list_of_samplenames | \
+parallel -j 1 \
+bedtools coverage -a Sorghum_window_file_10kb \
+-b ~/Analysis/datasets/IAEA_sorghum_WGS_run_1/ngm_bam/{}_Sbicolor_313_v3.0.fa.bam \
+\> 10kb/coverage_10kb_{}.out
+```
+
+## Statistical tests
+
+```{r coverage_statistical_tests.R, include=T, cache=T}
+library(tidyverse)
+library(ggplot2)
+#setwd("/Users/u5264546/sandbox/IAEA_sorghum")
+
+if (!dir.exists("out")) { dir.create("out")}
+
+samples = read.csv("samples.csv")
+
+for (width in c("10kb", "100kb", "500kb")) {
+    all = NULL
+    for (run in samples$run) {
+        bed = read.delim(paste0("data/", width, "/coverage_", width, "_", run, ".out"), header=F) %>%
+            rename(chr=V1, start=V2, stop=V3, reads=V4, bases=V5, winsize=V6, coverage=V7) %>%
+            select(chr, start, stop, coverage) %>%
+            mutate(run=run) %>%
+            left_join(samples, by="run")
+        all = rbind(all, bed)
+    }
+   
+    winmeans = mutate(all, mg = paste0("covmean_", pheno)) %>%
+        group_by(chr, start, stop, mg) %>%
+        summarise(meancov = mean(coverage)) %>%
+        spread(mg, meancov)
+    pvals = group_by(all, chr, start, stop) %>%
+        do(av=anova(lm(coverage ~ group, data=.)),
+           t=tryCatch(t.test(coverage ~ pheno, data=.),
+                      error=function(x) list(p.value=NaN, statistic=NaN))) %>%
+        mutate(aov.pval=av$`Pr(>F)`[1],
+               aov.logp = -1 *log10(aov.pval),
+               aov.fdr = p.adjust(aov.pval, method="fdr"),
+               aov.logfdr = -1 *log10(aov.fdr),
+               t.pval=t$p.value,
+               t.logp=-1 * log10(t.pval),
+               t.statistic=t$statistic
+               ) %>%
+        select(-t, -av) %>%
+        data.frame()
+    final = inner_join(pvals, winmeans, by=c("chr"="chr", "start"="start", "stop"="stop"))
+
+    write.csv(final, paste0("out/", width, ".csv"))
+
+    plot.d = ggplot(final, aes(start, aov.logp)) +
+        geom_point(aes(colour=chr)) +
+        labs(x="Genome Postition", y="-log10(p) aov") +
+        facet_wrap(~chr, ncol=1, strip.position="right", scales="free_x") +
+        theme_bw() +
+        theme(panel.grid=element_blank())
+    print(plot.d)
+    pdf(paste0("out/", width, "_aov.pdf"), width=(297/25.4), height=(210/25.4))
+    print(plot.d)
+    dev.off()
+
+    plot.d = ggplot(final, aes(start, t.logp)) +
+        geom_point(aes(colour=chr)) +
+        labs(x="Genome Postition", y="-log10(p) t.test") +
+        facet_wrap(~chr, ncol=1, strip.position="right", scales="free_x") +
+        theme_bw() +
+        theme(panel.grid=element_blank())
+    print(plot.d)
+    pdf(paste0("out/", width, "_tpval.pdf"), width=(297/25.4), height=(210/25.4))
+    print(plot.d)
+    dev.off()
+
+    plot.d = ggplot(final, aes(start, t.statistic)) +
+        geom_point(aes(colour=chr)) +
+        labs(x="Genome Postition", y="t Statistic") +
+        facet_wrap(~chr, ncol=1, strip.position="right", scales="free_x") +
+        theme_bw() +
+        theme(panel.grid=element_blank())
+    print(plot.d)
+    pdf(paste0("out/", width, "_tstat.pdf"), width=(297/25.4), height=(210/25.4))
+    print(plot.d)
+    dev.off()
+}
+
+
+# file: samples.csv
+# sample,run,group,pheno
+# con-2,con-2_S1,con,con
+# con-3,con-3_S2,con,con
+# con-4,con-4_S3,con,con
+# D1-1,D1-1_S4,D,dwarf
+# D1-2,D1-2_S5,D,dwarf
+# D1-4,D1-4_S6,D,dwarf
+# D2-1,D2-1_S7,D,dwarf
+# D2-3,D2-3_S8,D,dwarf
+# D2-4,D2-4_S9,D,dwarf
+# D3-1,D3-1_S10,D,dwarf
+# D3-3,D3-3_S11,D,dwarf
+# D3-4,D3-4_S12,D,dwarf
+# D4-1,D4-1_S13,D,dwarf
+# D4-3,D4-3_S14,D,dwarf
+# D4-4,D4-4_S15,D,dwarf
+# D5-1,D5-1_S16,D,dwarf
+# D5-3,D5-3_S17,D,dwarf
+# D5-4,D5-4_S18,D,dwarf
+# D6-2,D6-2_S19,D,dwarf
+# D6-3,D6-3_S20,D,dwarf
+# D6-4,D6-4_S21,D,dwarf
+# R1,R1_S22,R,dwarf
+# R2,R2_S23,R,con
+# R4,R4_S25,R,con
+```
